@@ -163,23 +163,25 @@ trades[, ':='(date   = strftime(datetime,'%Y-%m-%d'),
 # only keep the trades and quotes in normal trading time
 trades <- trades[time_m >= '09:30:00' & time_m <= '16:00:00']
 
-
-# feature engineering -----------------------------------------------------
-
 # check the sequence of timestamps and set datetime as key
 any(shift(trades$datetime, type = 'lead') < trades$datetime, na.rm = T)
 setkey(trades, datetime)
 
-# get 1 min intervals
+# get 1 min and 1 day intervals
 trades[, mins := cut(datetime, '1 min')]
+trades[, days := cut(datetime, '1 day')]
 
-# LHS variables: 
-# R1min_future: future 1-min return
+# trade price outlier detection
+trades[, priceAvg := mean(price), by = mins]
+trades[, outliers := ifelse(abs(price - priceAvg) / priceAvg > 0.01, T, F)]
 
-# RHS variables: 
-# LPminuspriceAvg: difference between last price and mean price
-# Volume1min_past: difference between current volume sum and past 1-min volume sum
-# R1min_past: past 1-min return 
+# take a look at outliers
+trades[outliers == T, ]
+
+trades <- trades[outliers == F, ]
+
+
+# feature engineering -----------------------------------------------------
 
 Tmin <- trades[, .(priceAvg   = mean(price),
                    volume     = sum(size),
@@ -187,11 +189,15 @@ Tmin <- trades[, .(priceAvg   = mean(price),
                    lastPrice  = tail(price, 1)),
                by = mins]
 
-# take 1-min leads and lags of priceAvg and volume
-Tmin[, ':=' (priceAvg_1lead = shift(priceAvg,  type = 'lead', n = 1),
-             priceAvg_1lag  = shift(priceAvg,  type = 'lag' , n = 1),
-             volumn_1lead   = shift(volume,    type = 'lead', n = 1),
-             volumn_1lag    = shift(volume,    type = 'lag' , n = 1))]
+# take 1-min leads and lags of lastprice, firstprice, priceAvg and volume
+Tmin[, ':=' (priceAvg_1lead   = shift(priceAvg,    type = 'lead', n = 1),
+             priceAvg_1lag    = shift(priceAvg,    type = 'lag' , n = 1),
+             lastPrice_1lead  = shift(lastPrice,   type = 'lead', n = 1),
+             lastPrice_1lag   = shift(lastPrice,   type = 'lag', n = 1),
+             firstPrice_1lead = shift(firstPrice,  type = 'lead', n = 1),
+             firstPrice_1lag  = shift(firstPrice,  type = 'lag', n = 1),
+             volumn_1lead     = shift(volume,      type = 'lead', n = 1),
+             volumn_1lag      = shift(volume,      type = 'lag' , n = 1))]
 
 # set mins as key in Tmin
 setkey(Tmin, mins)
@@ -215,11 +221,10 @@ Tmin[, c('first_min_record', 'last_min_record'):= NULL]
 Tmin <- Tmin[first_min == F & last_min == F, ]
 
 # caclulate RHS variables
-Tmin[, ':='(LPminuspriceAvg = lastPrice       - priceAvg,
-            Volume1min_past = volume          - volumn_1lag,
-            R1min_future    = (priceAvg_1lead - Tmin$priceAvg)/Tmin$priceAvg,
-            R1min_past      = (priceAvg_1lag  - Tmin$priceAvg)/priceAvg_1lag),
-     by = mins]
+Tmin[, ':='(LPminuspriceAvg = lastPrice        - priceAvg,
+            Volume1min_past = volume           - volumn_1lag,
+            R1min_future    = (Tmin$lastPrice_1lead - lastPrice)/lastPrice,
+            R1min_past      = (Tmin$priceAvg   - priceAvg_1lag)/priceAvg_1lag)]
 
 
 # modeling ----------------------------------------------------------------
@@ -228,9 +233,17 @@ Tmin[, ':='(LPminuspriceAvg = lastPrice       - priceAvg,
 oof   <- Tmin[(nrow(Tmin)*0.8 + 1):nrow(Tmin), ]
 train <- Tmin[1:(nrow(Tmin)*0.8)             , ]
 
+# LHS variables: 
+# R1min_future: future 1-min return
+
+# RHS variables: 
+# LPminuspriceAvg: difference between last price and mean price
+# Volume1min_past: difference between current volume sum and past 1-min volume sum
+# R1min_past: past 1-min return 
+
 # train a model to predict outcome #1
 mod <- lm(R1min_future ~ R1min_past + LPminuspriceAvg + Volume1min_past, 
-          data = train) 
+          data = train)
 
 summary(mod)
 
@@ -243,13 +256,14 @@ modelfit1 <-
   ggplot() + 
   geom_step(data = oof, aes(x = mins, y = R1min_future), color = 'blue') +
   geom_step(data = oof, aes(x = mins, y = validation), color = 'red') +
-  labs(title = "BABA 1-min Average Price Prediction\n(Blue: Prediction; Red: Real)", x = "Time", y = "Next Min Average Price", color = "Legend Title\n")+
+  labs(title = "BABA Future 1-Min Prediction Return and Real Return Match\n(Blue: Real; Red: Prediction)", 
+       x = "Time", y = "Future 1-Min Return", color = "Legend Title\n")+
   theme(
     panel.background = element_rect(fill = "white", size = 0.1, linetype = "solid"),
     panel.grid.major = element_line(size = 0.1, linetype = 'solid',colour = "grey")
   )
 
 # save graph to output
-ggsave("BABA 1-min Average Price Prediction.png",
+ggsave("BABA Future 1-Min Prediction Return and Real Return Match.pdf",
        path = paste0(rootpath, 'output'),
        plot = modelfit1)
