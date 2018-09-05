@@ -96,7 +96,8 @@ ex_sym <- data.frame(EX = c('A', 'B', 'C', 'D', 'I', 'J', 'K', 'M', 'N', 'P', 'S
                               'Bats BZX Exchange, Inc.')
 )
 
-exchange     <- trades[, .N, by = EX]
+exchange     <- trades[, .N,by = EX]
+
 exchange_sym <- merge(ex_sym, exchange, by = 'EX', all.y = T)
 
 exchange_sym[order(-rank(exchange_sym$N)), ]
@@ -165,6 +166,8 @@ trades <- trades[time_m >= '09:30:00' & time_m <= '16:00:00']
 
 # check the sequence of timestamps and set datetime as key
 any(shift(trades$datetime, type = 'lead') < trades$datetime, na.rm = T)
+
+# set datetime as key in trades
 setkey(trades, datetime)
 
 # get 1 min and 1 day intervals
@@ -178,11 +181,13 @@ trades[, outliers := ifelse(abs(price - priceAvg) / priceAvg > 0.01, T, F)]
 # take a look at outliers
 trades[outliers == T, ]
 
+# keep only non-outlier to trades
 trades <- trades[outliers == F, ]
 
 
 # feature engineering -----------------------------------------------------
 
+# create summary characteristics by minutes in trades
 Tmin <- trades[, .(priceAvg   = mean(price),
                    volume     = sum(size),
                    firstPrice = head(price, 1),
@@ -193,9 +198,9 @@ Tmin <- trades[, .(priceAvg   = mean(price),
 Tmin[, ':=' (priceAvg_1lead   = shift(priceAvg,    type = 'lead', n = 1),
              priceAvg_1lag    = shift(priceAvg,    type = 'lag' , n = 1),
              lastPrice_1lead  = shift(lastPrice,   type = 'lead', n = 1),
-             lastPrice_1lag   = shift(lastPrice,   type = 'lag', n = 1),
+             lastPrice_1lag   = shift(lastPrice,   type = 'lag',  n = 1),
              firstPrice_1lead = shift(firstPrice,  type = 'lead', n = 1),
-             firstPrice_1lag  = shift(firstPrice,  type = 'lag', n = 1),
+             firstPrice_1lag  = shift(firstPrice,  type = 'lag',  n = 1),
              volumn_1lead     = shift(volume,      type = 'lead', n = 1),
              volumn_1lag      = shift(volume,      type = 'lag' , n = 1))]
 
@@ -241,7 +246,7 @@ train <- Tmin[1:(nrow(Tmin)*0.8)             , ]
 # Volume1min_past: difference between current volume sum and past 1-min volume sum
 # R1min_past: past 1-min return 
 
-# train a model to predict outcome #1
+# train a model to predict outcome
 mod <- lm(R1min_future ~ R1min_past + LPminuspriceAvg + Volume1min_past, 
           data = train)
 
@@ -249,19 +254,20 @@ summary(mod)
 
 # predict outcome on OOF data
 oof$validation <- predict(mod, oof, type = "response")
-oof$mins       <- as.POSIXct(oof$mins)
 
 # plot prediction against price
+oof$mins  <- as.POSIXct(oof$mins)
+
 modelfit1 <- 
   ggplot() + 
   geom_step(data = oof, aes(x = mins, y = R1min_future), color = 'blue') +
-  geom_step(data = oof, aes(x = mins, y = validation), color = 'red') +
-  labs(title = "BABA Future 1-Min Prediction Return and Real Return Match\n(Blue: Real; Red: Prediction)", 
-       x = "Time", y = "Future 1-Min Return", color = "Legend Title\n")+
+  geom_step(data = oof, aes(x = mins, y = validation),   color = 'red') +
+  labs(
+    title = "BABA Future 1-Min Prediction Return and Real Return Match\n(Blue: Real; Red: Prediction)", 
+    x = "Time", y = "Future 1-Min Return", color = "Legend Title\n") +
   theme(
-    panel.background = element_rect(fill = "white", size = 0.1, linetype = "solid"),
-    panel.grid.major = element_line(size = 0.1, linetype = 'solid',colour = "grey")
-  )
+    panel.background = element_rect(fill = "white", size     = 0.1,     linetype = "solid"),
+    panel.grid.major = element_line(size = 0.1,     linetype = 'solid', colour   = "grey"))
 
 # save graph to output
 ggsave("BABA Future 1-Min Prediction Return and Real Return Match.pdf",
